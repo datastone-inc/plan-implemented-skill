@@ -17,6 +17,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from languages import detect_language
+
 
 # Status constants
 IMPLEMENTED = '✅'
@@ -52,18 +54,26 @@ def find_file_in_evidence(file_pattern: Optional[str], modified_files: list[str]
     return None
 
 
-def check_pattern_in_diff(pattern: str, diff_text: str) -> tuple[bool, Optional[str]]:
-    """Check if a pattern appears in added lines of a diff.
-
-    Returns (found, evidence_snippet).
-    """
-    # Search only in added lines (starting with +, but not +++ header)
+def _extract_added_lines(diff_text: str) -> tuple[list[str], str]:
+    """Extract added lines from a unified diff. Returns (lines, joined_text)."""
     added_lines = []
     for line in diff_text.split('\n'):
         if line.startswith('+') and not line.startswith('+++'):
             added_lines.append(line[1:])  # strip the leading +
+    return added_lines, '\n'.join(added_lines)
 
-    added_text = '\n'.join(added_lines)
+
+def check_pattern_in_diff(pattern: str, diff_text: str,
+                          _cache: Optional[tuple[list[str], str]] = None) -> tuple[bool, Optional[str]]:
+    """Check if a pattern appears in added lines of a diff.
+
+    Returns (found, evidence_snippet).
+    Pass _cache=(added_lines, added_text) to avoid re-parsing the same diff.
+    """
+    if _cache is not None:
+        added_lines, added_text = _cache
+    else:
+        added_lines, added_text = _extract_added_lines(diff_text)
 
     # Try exact match first
     if pattern in added_text:
@@ -102,30 +112,36 @@ def _looks_like_string_literal(pattern: str) -> bool:
     return False
 
 
+def _build_dead_code_texts(current_files: dict[str, str],
+                           declaring_file: str) -> tuple[str, str, str]:
+    """Build text blobs for dead-code checking. Returns (declaring, other, all)."""
+    declaring_text = ''
+    other_parts = []
+    for fpath, content in current_files.items():
+        if Path(fpath).name == Path(declaring_file).name:
+            declaring_text = content
+        else:
+            other_parts.append(content)
+    other_files_text = '\n'.join(other_parts)
+    return declaring_text, other_files_text, declaring_text + '\n' + other_files_text
+
+
 def check_dead_code(pattern: str, category: str,
-                    current_files: dict[str, str],
-                    declaring_file: Optional[str]) -> tuple[bool, Optional[str]]:
+                    declaring_file: Optional[str],
+                    declaring_text: str, other_files_text: str,
+                    all_text: str) -> tuple[bool, Optional[str]]:
     """Check if a declared symbol is actually used (not dead code).
 
     Returns (is_dead, explanation).
+    Pass pre-built text blobs from _build_dead_code_texts() to avoid
+    re-concatenating on every call.
     """
-    if not declaring_file or not current_files:
+    if not declaring_file:
         return False, None
 
     # String/enum values are never "dead code" in the function/field sense
     if _looks_like_string_literal(pattern):
         return False, None
-
-    # Gather all file contents except the declaring file
-    other_files_text = ''
-    declaring_text = ''
-    for fpath, content in current_files.items():
-        if Path(fpath).name == Path(declaring_file).name:
-            declaring_text = content
-        else:
-            other_files_text += content + '\n'
-
-    all_text = declaring_text + '\n' + other_files_text
 
     if category == 'type_definition':
         # A type should be referenced (imported or used) in other files
@@ -139,7 +155,6 @@ def check_dead_code(pattern: str, category: str,
 
     elif category == 'function':
         # Use language-aware call pattern if possible
-        from languages import detect_language
         lang_spec = detect_language(file_path=declaring_file)
         call_tmpl = lang_spec.get('call_pattern', r'{name}\s*\(')
         call_regex = call_tmpl.replace('{name}', re.escape(pattern))
@@ -159,7 +174,6 @@ def check_dead_code(pattern: str, category: str,
 
     elif category == 'field':
         # A field should be both assigned and read
-        from languages import detect_language
         lang_spec = detect_language(file_path=declaring_file)
         access_tmpl = lang_spec.get('access_pattern', r'\.{name}\b')
 
@@ -189,6 +203,14 @@ def cross_reference(plan_items: list[dict], evidence: dict) -> list[dict]:
     file_diffs = evidence.get('file_diffs', {})
     modified_files = evidence.get('modified_files', [])
     current_files = evidence.get('current_files', {})
+
+    # Pre-compute added lines per file to avoid re-parsing diffs
+    added_cache: dict[str, tuple[list[str], str]] = {}
+    for f, diff_text in file_diffs.items():
+        added_cache[f] = _extract_added_lines(diff_text)
+
+    # Pre-compute dead-code text blobs per declaring file
+    dead_code_cache: dict[str, tuple[str, str, str]] = {}
 
     results = []
 
@@ -235,7 +257,7 @@ def cross_reference(plan_items: list[dict], evidence: dict) -> list[dict]:
             found_count = 0
             for pattern in expected_patterns:
                 for f, diff_text in search_files.items():
-                    found, snippet = check_pattern_in_diff(pattern, diff_text)
+                    found, snippet = check_pattern_in_diff(pattern, diff_text, _cache=added_cache.get(f))
                     if found:
                         found_count += 1
                         result['evidence'].append(f'"{pattern}" found in {f}: {snippet}')
@@ -266,7 +288,7 @@ def cross_reference(plan_items: list[dict], evidence: dict) -> list[dict]:
             if expected_patterns:
                 for pattern in expected_patterns:
                     for f, diff_text in file_diffs.items():
-                        found, snippet = check_pattern_in_diff(pattern, diff_text)
+                        found, snippet = check_pattern_in_diff(pattern, diff_text, _cache=added_cache.get(f))
                         if found:
                             result['evidence'].append(
                                 f'Pattern "{pattern}" found in {f} instead (wrong file?): {snippet}'
@@ -286,11 +308,16 @@ def cross_reference(plan_items: list[dict], evidence: dict) -> list[dict]:
             continue
 
         diff_text = file_diffs.get(actual_file, '')
+        diff_cache = added_cache.get(actual_file)
         found_count = 0
         total_count = len(expected_patterns)
 
+        # Pre-build dead-code texts for this declaring file (once per file)
+        if actual_file and actual_file not in dead_code_cache:
+            dead_code_cache[actual_file] = _build_dead_code_texts(current_files, actual_file)
+
         for pattern in expected_patterns:
-            found, snippet = check_pattern_in_diff(pattern, diff_text)
+            found, snippet = check_pattern_in_diff(pattern, diff_text, _cache=diff_cache)
             if found:
                 found_count += 1
                 evidence_str = f'"{pattern}" found'
@@ -299,9 +326,10 @@ def cross_reference(plan_items: list[dict], evidence: dict) -> list[dict]:
                 result['evidence'].append(evidence_str)
 
                 # Dead-code check for found patterns
+                dc_declaring, dc_other, dc_all = dead_code_cache.get(actual_file, ('', '', ''))
                 is_dead, dead_reason = check_dead_code(
                     pattern, item.get('category', 'wiring'),
-                    current_files, actual_file
+                    actual_file, dc_declaring, dc_other, dc_all
                 )
                 if is_dead:
                     result['dead_code_findings'].append(dead_reason)
@@ -311,7 +339,7 @@ def cross_reference(plan_items: list[dict], evidence: dict) -> list[dict]:
                 # Check if it's in the full diff (different file)
                 for f, f_diff in file_diffs.items():
                     if f != actual_file:
-                        alt_found, alt_snippet = check_pattern_in_diff(pattern, f_diff)
+                        alt_found, alt_snippet = check_pattern_in_diff(pattern, f_diff, _cache=added_cache.get(f))
                         if alt_found:
                             result['evidence'].append(
                                 f'  → but found in {f}: {alt_snippet}'

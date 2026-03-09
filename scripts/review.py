@@ -10,7 +10,7 @@ Usage:
 """
 
 import argparse
-import json as json_mod
+import json
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -20,8 +20,8 @@ SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from parse_plan import parse_plan
-from gather_evidence import gather_evidence
-from cross_reference import cross_reference, generate_report
+from gather_evidence import gather_evidence, run_git
+from cross_reference import cross_reference, generate_report, NOT_IMPLEMENTED, DEAD_CODE
 
 
 def find_plans_directory(repo: Path) -> Path | None:
@@ -44,7 +44,7 @@ def find_plans_directory(repo: Path) -> Path | None:
     for sf in settings_files:
         if sf.exists():
             try:
-                data = json_mod.loads(sf.read_text(encoding='utf-8'))
+                data = json.loads(sf.read_text(encoding='utf-8'))
                 plans_dir = data.get('plansDirectory')
                 if plans_dir:
                     p = Path(plans_dir)
@@ -54,7 +54,7 @@ def find_plans_directory(repo: Path) -> Path | None:
                     p = p.expanduser().resolve()
                     if p.exists():
                         return p
-            except (json_mod.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError):
                 pass
 
     # Fallback: check common locations
@@ -67,14 +67,6 @@ def find_plans_directory(repo: Path) -> Path | None:
             return c
 
     return None
-
-
-def find_latest_plan(plans_dir: Path) -> Path | None:
-    """Find the most recently modified .md file in a plans directory."""
-    md_files = list(plans_dir.glob('*.md'))
-    if not md_files:
-        return None
-    return max(md_files, key=lambda f: f.stat().st_mtime)
 
 
 def list_plans(plans_dir: Path) -> None:
@@ -228,17 +220,15 @@ def main():
     print(f'  Results: {statuses}')
 
     # Gather context for report
-    from gather_evidence import run_git
-
     # Current branch
     _, branch_name, _ = run_git(['rev-parse', '--abbrev-ref', 'HEAD'], repo)
     branch_name = branch_name.strip()
 
     # HEAD commit
-    _, head_sha, _ = run_git(['log', '-1', '--format=%H'], repo)
-    head_sha = head_sha.strip()
-    _, head_subject, _ = run_git(['log', '-1', '--format=%s'], repo)
-    head_subject = head_subject.strip()
+    _, head_log, _ = run_git(['log', '-1', '--format=%H%n%s'], repo)
+    head_lines = head_log.strip().split('\n', 1)
+    head_sha = head_lines[0]
+    head_subject = head_lines[1] if len(head_lines) > 1 else ''
 
     # Uncommitted file count
     _, dirty_files, _ = run_git(['status', '--porcelain'], repo)
@@ -259,7 +249,6 @@ def main():
 
     # Output
     if args.json:
-        import json
         json.dump(results, sys.stdout, indent=2)
         print()
     else:
@@ -278,7 +267,7 @@ def main():
         print(f'\nReport saved to: {output_path}')
 
         # Print summary
-        has_issues = any(r['status'] in ('❌', '⚠️') for r in results)
+        has_issues = any(r['status'] in (NOT_IMPLEMENTED, DEAD_CODE) for r in results)
         if has_issues:
             print('\n⚠️  Issues detected — review PLAN_REVIEW.md for details')
             sys.exit(1)

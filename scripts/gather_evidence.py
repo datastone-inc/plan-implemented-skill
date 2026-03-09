@@ -173,12 +173,11 @@ def read_current_files(file_patterns: list[str], repo: Path) -> dict[str, str]:
 
         # Try exact path first
         exact = repo / pattern
-        if exact.exists() and exact.is_file():
-            try:
-                contents[pattern] = exact.read_text(encoding='utf-8')
-            except Exception:
-                pass
+        try:
+            contents[pattern] = exact.read_text(encoding='utf-8')
             continue
+        except (FileNotFoundError, IsADirectoryError, OSError):
+            pass
 
         # Try as a filename suffix match (plan often has partial paths)
         for p in repo.rglob('*'):
@@ -187,7 +186,7 @@ def read_current_files(file_patterns: list[str], repo: Path) -> dict[str, str]:
                 if 'node_modules' not in rel and '.git' not in rel:
                     try:
                         contents[rel] = p.read_text(encoding='utf-8')
-                    except Exception:
+                    except (FileNotFoundError, OSError):
                         pass
                     break  # take first match
 
@@ -238,9 +237,7 @@ def gather_evidence(base: str, repo: Path, plan_files: list[str],
 
     evidence['full_diff'] = full_diff
     evidence['file_diffs'] = parse_diff_by_file(full_diff)
-    evidence['modified_files'] = get_modified_files(
-        base, repo, scope=scope, plan_mtime=plan_mtime
-    )
+    evidence['modified_files'] = list(evidence['file_diffs'].keys())
 
     # Read current file contents for plan-mentioned files
     evidence['current_files'] = read_current_files(plan_files, repo)
@@ -248,12 +245,10 @@ def gather_evidence(base: str, repo: Path, plan_files: list[str],
     # Also read current state of all modified files (for dead-code detection)
     for f in evidence['modified_files']:
         if f not in evidence['current_files']:
-            fpath = repo / f
-            if fpath.exists() and fpath.is_file():
-                try:
-                    evidence['current_files'][f] = fpath.read_text(encoding='utf-8')
-                except Exception:
-                    pass
+            try:
+                evidence['current_files'][f] = (repo / f).read_text(encoding='utf-8')
+            except (FileNotFoundError, IsADirectoryError, OSError):
+                pass
 
     return evidence
 
