@@ -20,6 +20,30 @@ from pathlib import Path
 from typing import Optional
 
 
+_NON_ACTIONABLE_H2 = {
+    'context', 'summary', 'problem', 'problem statement', 'current state',
+    'verification', 'technical notes', 'existing code to reuse',
+    'what does not change', "what doesn't change", 'thinking blocks',
+    'privacy', 'data format comparison', 'default source strategy',
+    'graceful degradation', 'requirements',
+}
+
+# File-listing H2 headings — skipped when explicit change sections exist,
+# but treated as actionable in plans that lack them.
+_FILES_H2 = re.compile(
+    r'^##\s+Files?\s+(?:to\s+)?(?:Modify|Create|Modified|Deleted|Create/Modify)\b',
+    re.IGNORECASE,
+)
+
+
+def _has_explicit_changes(lines: list[str]) -> bool:
+    """Check if the plan uses ## Change N: or ## Part N: headings."""
+    for line in lines:
+        if re.match(r'^##\s+(?:Change|Part)\s+\d+', line):
+            return True
+    return False
+
+
 def parse_plan(plan_text: str) -> list[dict]:
     """Parse plan markdown into checklist items."""
     items = []
@@ -31,6 +55,9 @@ def parse_plan(plan_text: str) -> list[dict]:
         if line.startswith('# ') and not line.startswith('## '):
             plan_title = line.lstrip('# ').strip()
             break
+
+    has_explicit = _has_explicit_changes(lines)
+    change_counter = 0
 
     current_change_id = None
     current_change_title = ''
@@ -87,41 +114,80 @@ def parse_plan(plan_text: str) -> list[dict]:
             i += 1
             continue
 
-        # Detect Change headings: ## Change N: Title
-        change_match = re.match(r'^##\s+Change\s+(\d+):\s*(.+)', line)
-        if change_match:
-            current_change_id = f'Change {change_match.group(1)}'
-            current_change_title = change_match.group(2).strip()
-            current_file = None
+        # --- H2 heading detection ---
+        h2_match = re.match(r'^##\s+(.+)', line)
+        if h2_match:
+            h2_text = h2_match.group(1).strip()
+            h2_lower = h2_text.lower()
+
+            # Detect Tests section
+            if re.match(r'tests?\b', h2_lower):
+                in_tests_section = True
+                current_change_id = current_change_id or 'Tests'
+                i += 1
+                continue
+
+            # Detect Verification section (skip — procedural, not implementable)
+            if h2_lower.startswith('verification'):
+                in_tests_section = False
+                current_change_id = None
+                i += 1
+                continue
+
+            # Non-actionable headings — skip
+            if h2_lower in _NON_ACTIONABLE_H2:
+                in_tests_section = False
+                current_change_id = None
+                i += 1
+                continue
+
+            # Files-listing headings — skip only if plan has explicit changes
+            if _FILES_H2.match(line):
+                if has_explicit:
+                    i += 1
+                    continue
+                # Otherwise fall through and treat as actionable
+
+            in_tests_section = False
+
+            # Detect ## Change N: Title
+            change_match = re.match(r'Change\s+(\d+):\s*(.+)', h2_text)
+            if change_match:
+                current_change_id = f'Change {change_match.group(1)}'
+                current_change_title = change_match.group(2).strip()
+                current_file = None
+                current_sub_id = None
+                current_sub_title = ''
+                i += 1
+                continue
+
+            # Detect ## Part N: Title
+            part_match = re.match(r'Part\s+(\d+):\s*(.+)', h2_text)
+            if part_match:
+                current_change_id = f'Part {part_match.group(1)}'
+                current_change_title = part_match.group(2).strip()
+                current_file = None
+                current_sub_id = None
+                current_sub_title = ''
+                i += 1
+                continue
+
+            # Detect file-scoped heading: ## Changes to `file.ts`
+            file_heading = re.search(r'`([^`]+\.\w+)`', h2_text)
+            if file_heading:
+                current_file = file_heading.group(1)
+
+            # Generic actionable H2 — assign a change_id
+            change_counter += 1
+            current_change_id = f'Section {change_counter}'
+            current_change_title = h2_text
             current_sub_id = None
             current_sub_title = ''
-            in_tests_section = False
             i += 1
             continue
 
-        # Detect Tests section
-        if re.match(r'^##\s+Tests?\b', line, re.IGNORECASE):
-            in_tests_section = True
-            current_change_id = current_change_id or 'Tests'
-            i += 1
-            continue
-
-        # Detect Verification section (skip — procedural, not implementable)
-        if re.match(r'^##\s+Verification\b', line, re.IGNORECASE):
-            in_tests_section = False
-            current_change_id = None
-            i += 1
-            continue
-
-        # Detect Files to Modify table section
-        if re.match(r'^##\s+Files\s+to\s+Modify', line, re.IGNORECASE):
-            # This is a summary table — parse it for cross-reference but
-            # don't create separate items (the Change sections are canonical)
-            i += 1
-            continue
-
-        # Detect file targets: **File: path** or **File: `path`**
-        file_match = re.match(r'^\*\*File:\s*`?([^`*]+)`?\*\*', line)
+        # Detect file targets: **File: path**, **File: `path`**, **File:** `path`
+        file_match = re.match(r'^\*\*File:\*?\*?\s*`?([^`*]+)`?', line)
         if file_match:
             current_file = file_match.group(1).strip()
             i += 1
@@ -135,7 +201,7 @@ def parse_plan(plan_text: str) -> list[dict]:
 
             # Extract file path from sub-heading if present
             # e.g., "### 5a. Pattern analysis — `src/core/analyzer.ts`"
-            file_in_heading = re.search(r'`(src/[^`]+\.\w+)`', current_sub_title)
+            file_in_heading = re.search(r'`([^`]+\.\w+)`', current_sub_title)
             if file_in_heading:
                 current_file = file_in_heading.group(1)
             current_sub_id = sub_label if sub_label else current_sub_title[:30]
