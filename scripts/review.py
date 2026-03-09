@@ -21,7 +21,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from parse_plan import parse_plan
 from gather_evidence import gather_evidence, run_git
-from cross_reference import cross_reference, generate_report, NOT_IMPLEMENTED, DEAD_CODE
+from cross_reference import cross_reference, generate_report, IN_DIFF, NOT_FOUND, PRE_EXISTING, MIXED, SKIPPED
 
 
 def find_plans_directory(repo: Path) -> Path | None:
@@ -212,12 +212,12 @@ def main():
     results = cross_reference(plan_items, evidence)
 
     # Tally
-    statuses = {}
+    levels = {}
     for r in results:
-        s = r['status']
-        statuses[s] = statuses.get(s, 0) + 1
+        lvl = r['evidence_level']
+        levels[lvl] = levels.get(lvl, 0) + 1
 
-    print(f'  Results: {statuses}')
+    print(f'  Evidence: {levels}')
 
     # Gather context for report
     # Current branch
@@ -267,12 +267,16 @@ def main():
         print(f'\nReport saved to: {output_path}')
 
         # Print summary
-        has_issues = any(r['status'] in (NOT_IMPLEMENTED, DEAD_CODE) for r in results)
-        if has_issues:
-            print('\n⚠️  Issues detected — review PLAN_REVIEW.md for details')
+        needs_review = any(
+            r['evidence_level'] in (NOT_FOUND, PRE_EXISTING, MIXED)
+            or r['dead_code_findings']
+            for r in results
+        )
+        if needs_review:
+            print('\n🔍 Items need LLM verification — see report for evidence')
             sys.exit(1)
         else:
-            print('\n✅ All verifiable plan items implemented')
+            print('\n✅ All verifiable patterns found in diff')
             sys.exit(0)
 
 
