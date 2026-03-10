@@ -19,6 +19,7 @@ Also performs grep-level dead-code detection across the full codebase.
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -69,6 +70,34 @@ def _extract_added_lines(diff_text: str) -> tuple[list[str], str]:
     return added_lines, '\n'.join(added_lines)
 
 
+def _find_pattern_in_text(pattern: str, lines: list[str], joined_text: str,
+                          snippet_prefix: str = '') -> tuple[bool, Optional[str]]:
+    """Search for a pattern in text lines, trying exact then case-insensitive.
+
+    Returns (found, evidence_snippet).
+    """
+    if pattern in joined_text:
+        for line in lines:
+            if pattern in line:
+                snippet = line.strip()
+                if len(snippet) > 100:
+                    snippet = snippet[:100] + '...'
+                return True, f'{snippet_prefix}{snippet}'
+        return True, None
+
+    escaped = re.escape(pattern)
+    if re.search(escaped, joined_text, re.IGNORECASE):
+        for line in lines:
+            if re.search(escaped, line, re.IGNORECASE):
+                snippet = line.strip()
+                if len(snippet) > 100:
+                    snippet = snippet[:100] + '...'
+                return True, f'{snippet_prefix}{snippet} (case-insensitive match)'
+        return True, None
+
+    return False, None
+
+
 def check_pattern_in_diff(pattern: str, diff_text: str,
                           _cache: Optional[tuple[list[str], str]] = None) -> tuple[bool, Optional[str]]:
     """Check if a pattern appears in added lines of a diff.
@@ -81,28 +110,7 @@ def check_pattern_in_diff(pattern: str, diff_text: str,
     else:
         added_lines, added_text = _extract_added_lines(diff_text)
 
-    # Try exact match first
-    if pattern in added_text:
-        # Find the line containing it for evidence
-        for line in added_lines:
-            if pattern in line:
-                snippet = line.strip()
-                if len(snippet) > 100:
-                    snippet = snippet[:100] + '...'
-                return True, f'+{snippet}'
-        return True, None
-
-    # Try case-insensitive for type names that might differ in casing
-    if re.search(re.escape(pattern), added_text, re.IGNORECASE):
-        for line in added_lines:
-            if re.search(re.escape(pattern), line, re.IGNORECASE):
-                snippet = line.strip()
-                if len(snippet) > 100:
-                    snippet = snippet[:100] + '...'
-                return True, f'+{snippet} (case-insensitive match)'
-        return True, None
-
-    return False, None
+    return _find_pattern_in_text(pattern, added_lines, added_text, snippet_prefix='+')
 
 
 def check_pattern_in_file(pattern: str, file_content: str) -> tuple[bool, Optional[str]]:
@@ -110,25 +118,8 @@ def check_pattern_in_file(pattern: str, file_content: str) -> tuple[bool, Option
 
     Returns (found, evidence_snippet).
     """
-    if pattern in file_content:
-        for line in file_content.split('\n'):
-            if pattern in line:
-                snippet = line.strip()
-                if len(snippet) > 100:
-                    snippet = snippet[:100] + '...'
-                return True, snippet
-        return True, None
-
-    if re.search(re.escape(pattern), file_content, re.IGNORECASE):
-        for line in file_content.split('\n'):
-            if re.search(re.escape(pattern), line, re.IGNORECASE):
-                snippet = line.strip()
-                if len(snippet) > 100:
-                    snippet = snippet[:100] + '...'
-                return True, f'{snippet} (case-insensitive)'
-        return True, None
-
-    return False, None
+    lines = file_content.split('\n')
+    return _find_pattern_in_text(pattern, lines, file_content)
 
 
 def _looks_like_string_literal(pattern: str) -> bool:
@@ -451,11 +442,12 @@ def generate_report(results: list[dict], plan_title: str,
 
     # Evidence summary
     total = len(results)
-    in_diff = sum(1 for r in results if r['evidence_level'] == IN_DIFF)
-    mixed = sum(1 for r in results if r['evidence_level'] == MIXED)
-    pre_existing = sum(1 for r in results if r['evidence_level'] == PRE_EXISTING)
-    not_found = sum(1 for r in results if r['evidence_level'] == NOT_FOUND)
-    skipped = sum(1 for r in results if r['evidence_level'] == SKIPPED)
+    level_counts = Counter(r['evidence_level'] for r in results)
+    in_diff = level_counts[IN_DIFF]
+    mixed = level_counts[MIXED]
+    pre_existing = level_counts[PRE_EXISTING]
+    not_found = level_counts[NOT_FOUND]
+    skipped = level_counts[SKIPPED]
     has_dead = sum(1 for r in results if r['dead_code_findings'])
 
     lines.append('## Evidence Summary')

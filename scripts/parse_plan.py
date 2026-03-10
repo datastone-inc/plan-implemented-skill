@@ -22,7 +22,7 @@ from typing import Optional
 
 _NON_ACTIONABLE_H2 = {
     'context', 'summary', 'problem', 'problem statement', 'current state',
-    'verification', 'technical notes', 'existing code to reuse',
+    'technical notes', 'existing code to reuse',
     'what does not change', "what doesn't change", 'thinking blocks',
     'privacy', 'data format comparison', 'default source strategy',
     'graceful degradation', 'requirements',
@@ -150,22 +150,11 @@ def parse_plan(plan_text: str) -> list[dict]:
 
             in_tests_section = False
 
-            # Detect ## Change N: Title
-            change_match = re.match(r'Change\s+(\d+):\s*(.+)', h2_text)
-            if change_match:
-                current_change_id = f'Change {change_match.group(1)}'
-                current_change_title = change_match.group(2).strip()
-                current_file = None
-                current_sub_id = None
-                current_sub_title = ''
-                i += 1
-                continue
-
-            # Detect ## Part N: Title
-            part_match = re.match(r'Part\s+(\d+):\s*(.+)', h2_text)
-            if part_match:
-                current_change_id = f'Part {part_match.group(1)}'
-                current_change_title = part_match.group(2).strip()
+            # Detect ## Change N: Title or ## Part N: Title
+            numbered_match = re.match(r'(Change|Part)\s+(\d+):\s*(.+)', h2_text)
+            if numbered_match:
+                current_change_id = f'{numbered_match.group(1)} {numbered_match.group(2)}'
+                current_change_title = numbered_match.group(3).strip()
                 current_file = None
                 current_sub_id = None
                 current_sub_title = ''

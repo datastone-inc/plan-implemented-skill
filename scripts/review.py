@@ -21,7 +21,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from parse_plan import parse_plan
 from gather_evidence import gather_evidence, run_git
-from cross_reference import cross_reference, generate_report, IN_DIFF, NOT_FOUND, PRE_EXISTING, MIXED, SKIPPED
+from cross_reference import cross_reference, generate_report, IN_DIFF, NOT_FOUND, PRE_EXISTING, MIXED
 
 
 def find_plans_directory(repo: Path) -> Path | None:
