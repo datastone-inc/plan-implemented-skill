@@ -8,13 +8,13 @@
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-Skill-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 
-Post-implementation audit skill for Claude Code `/plan`. Verifies that a `/plan` was fully implemented by comparing plan items against actual code changes. Catches missing implementations, dead code, and missing tests, then interactively walks you through gaps and offers to fix them.
+Post-implementation cross-check skill for Claude Code `/plan`. Verifies that a `/plan` was fully implemented by comparing plan items against actual code changes. Catches phantom completions (tasks marked complete that were never done), dead code, and missing tests, then interactively walks you through gaps and offers to fix them.
 
 > [!NOTE]
 >
 > - Works on committed and uncommitted work. Run before or after committing.
-> - Complements code review but doesn't replace it; focuses on implementation gaps vs. the plan, not code quality or design. Run before or after code review, as needed.
-> - Suggested to run this **before** `/simplify`, `/refactor`, or similar commands. If there's a gap between the plan and the current code, those commands may remove or restructure code that appears unused or dead, but is only that way because the wiring is missing. Close the plan implementation gaps first, then simplify.
+> - Complements code review but doesn't replace it. Code review checks whether the code that was written is correct. This skill checks whether the code that was supposed to be written actually exists. See Phantom Completions in AI-Assisted Development for the theory behind why this gap occurs.
+> - Suggested to run this **before** `/simplify`, `/refactor`, or similar commands. If there's a gap between the plan and the current code, those commands may remove or restructure code that appears unused or dead, but is only that way because the wiring is missing. Close the phantom completions and implementation gaps first, then simplify.
 
 ## Installation
 
@@ -78,6 +78,9 @@ In Claude Code:
 > was the plan actually followed?
 > check if the plan was implemented
 > I haven't committed yet, did I cover the plan?
+
+# You can also run the skill with ad-hoc AI augmentation, e.g.:
+> /plan-implemented list all the plans in .claude/plans in reverse chronological order with a brief summary title. run the plan-implemented skill on the ones I select in parallel.
 ```
 
 ### Scopes
@@ -160,7 +163,7 @@ To add a new language, add an entry to `scripts/languages.py`. No other code cha
 
 1. **Parse**: reads the plan markdown and extracts verifiable items (types, functions, fields, filters, tests) using language-aware pattern extraction
 2. **Evidence**: gathers changes according to the chosen scope (branch diff, plan-anchored, uncommitted, or all)
-3. **Cross-reference**: checks each item against the diff; language-aware dead-code detection finds declared-but-unused symbols
+3. **Cross-reference**: checks each item against the diff; language-aware dead-code detection finds declared-but-unused symbols. This cross-reference step is what catches phantom completions, where the agent marked a plan item complete without performing the specified work.
 4. **Interactive**: Claude presents findings, walks through gaps, and offers to fix them
 
 ## Architecture
@@ -226,13 +229,13 @@ The scripts provide evidence; Claude Code makes the verdicts and suggests fixes.
 
 ## Contributing
 
-Contributions welcome! The easiest way to help is adding language support by adding an entry to `scripts/languages.py`. Each language entry is a self-contained dict of regex patterns.
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines. In particular, you may want to focus on adding language support or improving the cross-reference logic.
 
 For bug reports and feature requests, please open an issue.
 
 ## Authors
 
-**[dataStone Inc.](https://github.com/datastone-inc)**: concept, design, and development
+**Dave Sharpe** ([dave.sharpe@datastone.ca](mailto:dave.sharpe@datastone.ca)) at **[dataStone Inc.](https://github.com/datastone-inc)**: concept, design, and development
 
 **[Claude (Anthropic)](https://www.anthropic.com)**: co-developed the implementation, scripts, and multi-language support via Claude Code
 
